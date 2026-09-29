@@ -2,13 +2,13 @@ const {app,BrowserWindow,ipcMain,dialog,session}=require('electron');
 const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto');
 const F=require('./lib/finance.cjs');
 const Campus=require('./lib/campus.cjs');
-let main,school,book,queue=Promise.resolve(),syncing=false,cancelSync=false;
+let main,school,book,queue=Promise.resolve(),syncing=false,cancelSync=false,quitting=false;
 const dataOverride=process.argv.find(x=>x.startsWith('--data-dir='));if(dataOverride)app.setPath('userData',path.resolve(dataOverride.slice(11)));
 const file=()=>path.join(app.getPath('userData'),'ledger.json');
 const allowed=url=>{try{const u=new URL(url);return u.protocol==='https:'&&['campuscard.sustech.edu.cn','cas.sustech.edu.cn'].includes(u.hostname);}catch{return false;}};
 const schoolPage=url=>{try{return new URL(url).origin==='https://campuscard.sustech.edu.cn';}catch{return false;}};
 async function persist(next){F.validate(next);await fs.mkdir(path.dirname(file()),{recursive:true});await fs.writeFile(file()+'.tmp',JSON.stringify(next,null,2),{mode:0o600});await fs.rename(file()+'.tmp',file());book=next;return book;}
-async function openSchool(){if(school&&!school.isDestroyed()){school.show();return true;}const ses=session.fromPartition('school-memory');ses.setPermissionRequestHandler((w,p,cb)=>cb(false));ses.setPermissionCheckHandler(()=>false);school=new BrowserWindow({title:'南科大官方校园卡 · 登录并打开消费明细',width:1100,height:820,webPreferences:{partition:'school-memory',nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true}});school.webContents.setWindowOpenHandler(({url})=>{if(allowed(url))void school.loadURL(url).catch(()=>{});return {action:'deny'};});school.webContents.on('will-navigate',(e,url)=>{if(!allowed(url))e.preventDefault();});school.webContents.on('will-redirect',(e,url)=>{if(!allowed(url))e.preventDefault();});school.on('closed',()=>{school=null;});await school.loadURL('https://campuscard.sustech.edu.cn/epay/');return true;}
+async function openSchool(){if(school&&!school.isDestroyed()){school.show();return true;}const ses=session.fromPartition('school-memory');ses.setPermissionRequestHandler((w,p,cb)=>cb(false));ses.setPermissionCheckHandler(()=>false);school=new BrowserWindow({title:'南科大官方校园卡 · 登录后关闭窗口即可同步',width:1100,height:820,webPreferences:{partition:'school-memory',nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true}});school.webContents.setWindowOpenHandler(({url})=>{if(allowed(url))void school.loadURL(url).catch(()=>{});return {action:'deny'};});school.webContents.on('will-navigate',(e,url)=>{if(!allowed(url))e.preventDefault();});school.webContents.on('will-redirect',(e,url)=>{if(!allowed(url))e.preventDefault();});school.on('close',e=>{if(quitting||!main||main.isDestroyed())return;e.preventDefault();school.hide();if(syncing)return;const task=queue.then(()=>sync());queue=task.then(()=>{},()=>{});void task.then(value=>main.webContents.send('auto-sync-result',{ok:true,value}),err=>main.webContents.send('auto-sync-result',{ok:false,error:err.message}));});school.on('closed',()=>{school=null;});await school.loadURL('https://campuscard.sustech.edu.cn/epay/');return true;}
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 function progress(message){main.webContents.send('sync-progress',message);}
 async function sync(){
@@ -65,9 +65,11 @@ handle('load',()=>({book,stats:F.calculate(book),today:F.today()}));
 handle('settings',s=>persist({...book,settings:s}),true);
 handle('add',e=>persist({...book,entries:[...book.entries,{id:crypto.randomUUID(),date:e.date,place:e.place.trim().slice(0,100),cents:F.cents(e.amount),meal:true,source:'manual',note:''}]}),true);
 handle('toggle',id=>persist({...book,entries:book.entries.map(e=>e.id===id?{...e,meal:!e.meal}:e)}),true);
+handle('setPlaceIncluded',({place,included})=>{if(typeof place!=='string'||typeof included!=='boolean')throw Error('地点分类无效');return persist({...book,entries:book.entries.map(e=>e.place===place?{...e,meal:included}:e)});},true);
 handle('remove',id=>persist({...book,entries:book.entries.filter(e=>e.id!==id)}),true);
 handle('school',openSchool);handle('scan',sync,true);handle('cancelSync',()=>{cancelSync=true;return true;});
 handle('backup',async()=>{const r=await dialog.showSaveDialog(main,{defaultPath:'南科饭钱-备份.json',filters:[{name:'账本备份',extensions:['json']}]});if(r.canceled)return false;await fs.writeFile(r.filePath,JSON.stringify(book,null,2),{mode:0o600});return true;});
 handle('restore',async()=>{const r=await dialog.showOpenDialog(main,{properties:['openFile'],filters:[{name:'账本备份',extensions:['json']}]});if(r.canceled)return false;const st=await fs.stat(r.filePaths[0]);if(st.size>10*1024*1024)throw Error('备份文件过大');const b=F.validate(JSON.parse(await fs.readFile(r.filePaths[0],'utf8')));const c=await dialog.showMessageBox(main,{type:'question',buttons:['取消','替换账本'],defaultId:0,cancelId:0,message:`用备份中的 ${b.entries.length} 笔记录替换当前账本？`});if(c.response!==1)return false;await persist(b);return true;},true);
 await main.loadFile(path.join(__dirname,'ui/index.html'));});
+app.on('before-quit',()=>{quitting=true;});
 app.on('window-all-closed',()=>app.quit());
