@@ -1,0 +1,17 @@
+{
+  "name": "sustech-meals-desktop",
+  "version": "1.0.0",
+  "description": "南科饭钱：校园餐饮支出与预算",
+  "main": "main.cjs",
+  "author": "Personal",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "package:mac": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.4.5"
+  }
+}
